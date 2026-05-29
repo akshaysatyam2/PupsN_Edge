@@ -9,11 +9,11 @@ import threading
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
 
-from camera import RealTimeVideoStream
-from models import AIPipeline
-from database import get_camera_url, log_detection_event
+from core.camera import RealTimeVideoStream
+from core.inference import AIPipeline
+from core.database import get_camera_url, log_detection_event
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='web/templates', static_folder='web/static')
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 

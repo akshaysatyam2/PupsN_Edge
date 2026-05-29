@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 import onnxruntime as ort
-from database import GLOBAL_PET_CACHE
+from core.database import GLOBAL_PET_CACHE
 
 class AIPipeline:
     """
