@@ -10,7 +10,7 @@ from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
 
 from camera import RealTimeVideoStream
-from models import MockAIPipeline
+from models import AIPipeline
 from database import get_camera_url, log_detection_event
 
 app = Flask(__name__)
@@ -18,7 +18,7 @@ app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # Global state for the persistent background thread
-ai_pipeline = MockAIPipeline()
+ai_pipeline = AIPipeline()
 video_stream = None
 background_thread = None
 
