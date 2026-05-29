@@ -18,14 +18,14 @@ class AIPipeline:
             print(f"WARNING: YOLO model not found at {self.yolo_path}. Inference will be bypassed.")
             self.yolo_session = None
         else:
-            self.yolo_session = ort.InferenceSession(self.yolo_path, providers=['CPUExecutionProvider'])
+            self.yolo_session = ort.InferenceSession(self.yolo_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
             self.yolo_input_name = self.yolo_session.get_inputs()[0].name
             
         if not os.path.exists(self.osnet_path):
             print(f"WARNING: OSNet model not found at {self.osnet_path}. Inference will be bypassed.")
             self.osnet_session = None
         else:
-            self.osnet_session = ort.InferenceSession(self.osnet_path, providers=['CPUExecutionProvider'])
+            self.osnet_session = ort.InferenceSession(self.osnet_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
             self.osnet_input_name = self.osnet_session.get_inputs()[0].name
 
     def preprocess_yolo(self, frame):
@@ -39,58 +39,88 @@ class AIPipeline:
 
     def postprocess_yolo(self, outputs, orig_w, orig_h):
         """
-        Parses YOLOv8/11 standard ONNX output [1, 84, 8400].
+        Parses YOLO output, handling both standard [1, 84, 8400] and NMS-free [1, 300, 6] (YOLO26).
         Filters for COCO Class ID 16 (Dog) and applies scaling.
         """
-        predictions = np.squeeze(outputs).T # shape: (8400, 84)
-        
-        # COCO Class ID 16 is 'dog'
         DOG_CLASS_ID = 16
         CONFIDENCE_THRESHOLD = 0.5
         
         boxes = []
         confidences = []
         
-        # Parse output grid
-        for row in predictions:
-            classes_scores = row[4:]
-            class_id = np.argmax(classes_scores)
-            confidence = classes_scores[class_id]
-            
-            if class_id == DOG_CLASS_ID and confidence > CONFIDENCE_THRESHOLD:
-                # YOLO outputs center_x, center_y, width, height
-                cx, cy, w, h = row[0], row[1], row[2], row[3]
+        # Check if the output is NMS-free format (YOLOv10 / YOLO26)
+        # NMS-free models output shape: (1, 300, 6) -> [left, top, right, bottom, confidence, class]
+        if outputs.shape[-1] == 6 and len(outputs.shape) == 3:
+            predictions = np.squeeze(outputs) # shape: (300, 6)
+            for row in predictions:
+                x1, y1, x2, y2, confidence, class_id = row
                 
-                # Scale back to original image dimensions
-                x_scale = orig_w / 640.0
-                y_scale = orig_h / 640.0
-                
-                cx *= x_scale
-                cy *= y_scale
-                w *= x_scale
-                h *= y_scale
-                
-                # Convert to [x_min, y_min, x_max, y_max]
-                x_min = int(cx - (w / 2))
-                y_min = int(cy - (h / 2))
-                x_max = int(cx + (w / 2))
-                y_max = int(cy + (h / 2))
-                
-                boxes.append([x_min, y_min, x_max, y_max])
-                confidences.append(float(confidence))
-                
-        # Apply Non-Maximum Suppression (NMS) to remove overlapping boxes
-        indices = cv2.dnn.NMSBoxes(boxes, confidences, CONFIDENCE_THRESHOLD, 0.4)
-        
-        final_detections = []
-        if len(indices) > 0:
-            for i in indices.flatten():
+                if int(class_id) == DOG_CLASS_ID and confidence > CONFIDENCE_THRESHOLD:
+                    # Scale back to original image dimensions
+                    x_scale = orig_w / 640.0
+                    y_scale = orig_h / 640.0
+                    
+                    x_min = int(x1 * x_scale)
+                    y_min = int(y1 * y_scale)
+                    x_max = int(x2 * x_scale)
+                    y_max = int(y2 * y_scale)
+                    
+                    boxes.append([x_min, y_min, x_max, y_max])
+                    confidences.append(float(confidence))
+                    
+            # For NMS-free models, we don't need to run cv2.dnn.NMSBoxes, but we can structure the output directly
+            final_detections = []
+            for i in range(len(boxes)):
                 final_detections.append({
                     "bbox": boxes[i],
                     "confidence": confidences[i]
                 })
+            return final_detections
+            
+        else:
+            # Standard YOLO output shape: (1, 84, 8400)
+            predictions = np.squeeze(outputs).T # shape: (8400, 84)
+            
+            # Parse output grid
+            for row in predictions:
+                classes_scores = row[4:]
+                class_id = np.argmax(classes_scores)
+                confidence = classes_scores[class_id]
                 
-        return final_detections
+                if class_id == DOG_CLASS_ID and confidence > CONFIDENCE_THRESHOLD:
+                    # YOLO outputs center_x, center_y, width, height
+                    cx, cy, w, h = row[0], row[1], row[2], row[3]
+                    
+                    # Scale back to original image dimensions
+                    x_scale = orig_w / 640.0
+                    y_scale = orig_h / 640.0
+                    
+                    cx *= x_scale
+                    cy *= y_scale
+                    w *= x_scale
+                    h *= y_scale
+                    
+                    # Convert to [x_min, y_min, x_max, y_max]
+                    x_min = int(cx - (w / 2))
+                    y_min = int(cy - (h / 2))
+                    x_max = int(cx + (w / 2))
+                    y_max = int(cy + (h / 2))
+                    
+                    boxes.append([x_min, y_min, x_max, y_max])
+                    confidences.append(float(confidence))
+                    
+            # Apply Non-Maximum Suppression (NMS) to remove overlapping boxes
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, CONFIDENCE_THRESHOLD, 0.4)
+            
+            final_detections = []
+            if len(indices) > 0:
+                for i in indices.flatten():
+                    final_detections.append({
+                        "bbox": boxes[i],
+                        "confidence": confidences[i]
+                    })
+                    
+            return final_detections
 
     def preprocess_osnet(self, cropped_img):
         """
