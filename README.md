@@ -77,7 +77,7 @@ Because `.onnx` files are extremely large binary weights, they are **strictly ig
 
 You must supply your own YOLO Nano and OSNet ONNX exports and place them in the `models/` directory:
 
-1. Place your YOLO ONNX export at: `models/yolo_nano.onnx`
+1. Place your YOLO ONNX export at: `models/yolo26nano.onnx`
 2. Place your OSNet ONNX export at: `models/osnet_x1_0.onnx`
 
 *Note: The YOLO model must be exported with standard output formatting `[1, 84, 8400]` or adjusted in `models.py`. OSNet must output a standard `[1, 512]` vector.*

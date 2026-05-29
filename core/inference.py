@@ -9,7 +9,7 @@ class AIPipeline:
     Day 1 MVP Pipeline AI Models (YOLO Nano & OSNet).
     Utilizes ONNX Runtime for high-speed, lightweight inference.
     """
-    def __init__(self, yolo_path="models/yolo_nano.onnx", osnet_path="models/osnet_x1_0.onnx"):
+    def __init__(self, yolo_path="models/yolo26nano.onnx", osnet_path="models/osnet_x1_0.onnx"):
         self.yolo_path = yolo_path
         self.osnet_path = osnet_path
         
