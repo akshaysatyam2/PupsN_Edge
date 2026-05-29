@@ -1,0 +1,6 @@
+Flask==3.0.3
+Flask-SocketIO==5.3.6
+opencv-python==4.9.0.80
+numpy==1.26.4
+eventlet==0.35.2
+onnxruntime==1.17.1
