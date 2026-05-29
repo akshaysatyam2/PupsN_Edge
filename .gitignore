@@ -1,0 +1,63 @@
+# Environments
+.env
+.flaskenv
+venv/
+env/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# AI Models and Weights
+*.onnx
+*.pt
+*.pth
+*.weights
+*.h5
+*.pb
+*.tflite
+models/
+!models/.keep
+
+# Database
+*.db
+*.sqlite3
+
+# Video / Images
+*.mp4
+*.avi
+*.mkv
+*.jpg
+*.jpeg
+*.png
+logs/
+!logs/.keep
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
