@@ -203,6 +203,7 @@ def register_pet():
         return jsonify({"error": "Models are not loaded on backend."}), 500
 
     extracted_vectors = []
+    failed_count = 0
     
     for file in files:
         if file.filename == '':
@@ -212,6 +213,7 @@ def register_pet():
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         
         if img is None:
+            failed_count += 1
             continue
             
         h, w = img.shape[:2]
@@ -221,7 +223,8 @@ def register_pet():
         
         # 2. The 1-Dog Rule per uploaded image
         if len(detections) != 1:
-            return jsonify({"error": f"Registration failed on image '{file.filename}': Found {len(detections)} dogs. Each uploaded image must contain exactly one dog."}), 400
+            failed_count += 1
+            continue
             
         # 3. Crop & Extract using real OSNet model
         x_min, y_min, x_max, y_max = detections[0]["bbox"]
@@ -245,7 +248,7 @@ def register_pet():
         del osnet_input
     
     if len(extracted_vectors) == 0:
-        return jsonify({"error": "Failed to process any valid images."}), 400
+        return jsonify({"error": f"Failed to register. All {len(files)} uploaded images were invalid (e.g., no dog found, or multiple dogs found)."}), 400
         
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -273,7 +276,11 @@ def register_pet():
     
     gc.collect()
     
-    return jsonify({"success": True, "message": f"{pet_name} registered successfully with {len(extracted_vectors)} photos."})
+    msg = f"{pet_name} registered successfully with {len(extracted_vectors)} photos."
+    if failed_count > 0:
+        msg += f" (Note: {failed_count} photos were skipped due to invalid dog count)."
+        
+    return jsonify({"success": True, "message": msg})
 
 
 class BackgroundWorkerManager:
