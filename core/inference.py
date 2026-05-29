@@ -43,7 +43,7 @@ class AIPipeline:
         Filters for COCO Class ID 16 (Dog) and applies scaling.
         """
         DOG_CLASS_ID = 16
-        CONFIDENCE_THRESHOLD = 0.5
+        CONFIDENCE_THRESHOLD = 0.35
         
         boxes = []
         confidences = []
@@ -193,7 +193,7 @@ class AIPipeline:
                     
                     if similarity > best_score:
                         best_score = similarity
-                        if similarity >= 0.85: # Threshold from specification
+                        if similarity >= 0.75: # Lowered threshold for higher recall
                             best_match = pet_name
                         
             results.append({
