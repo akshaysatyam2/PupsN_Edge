@@ -4,54 +4,223 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PupsN Vision System</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background-color: #1a1a1a;
-            color: #ffffff;
-            margin: 0;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        h1 {
-            margin-bottom: 20px;
-        }
-        .canvas-container {
-            position: relative;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            background-color: #000;
-            border-radius: 8px;
-            overflow: hidden;
-            width: 640px; /* Base resolution */
-            height: 480px;
-        }
-        canvas {
-            display: block;
-            width: 100%;
-            height: 100%;
-        }
-        #status-banner {
-            margin-top: 15px;
-            padding: 10px 20px;
-            border-radius: 5px;
-            font-weight: bold;
-        }
-        .status-active { background-color: #28a745; }
-        .status-inactive { background-color: #dc3545; }
-    </style>
-</head>
-<body>
-    <h1>PupsN Vision - Live Stream</h1>
-    
-    <div class="canvas-container">
-        <canvas id="videoCanvas" width="640" height="480"></canvas>
-    </div>
-    
-    <div id="status-banner" class="status-inactive">Waiting for Connection...</div>
-
+    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</head>
+<body class="bg-gray-900 text-white font-sans min-h-screen p-6">
+    <div class="max-w-6xl mx-auto">
+        <h1 class="text-3xl font-bold mb-8 text-center text-blue-400">PupsN Vision System</h1>
+        
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Main Video Feed -->
+            <div class="lg:col-span-2">
+                <div class="bg-black rounded-xl overflow-hidden shadow-2xl relative border border-gray-700 aspect-square">
+                    <canvas id="videoCanvas" width="640" height="640" class="w-full h-full object-cover"></canvas>
+                    <div id="status-overlay" class="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded font-bold text-sm hidden">
+                        Inactive / Reconnecting...
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Diagnostics & Forms -->
+            <div class="space-y-6">
+                <!-- Diagnostics Panel -->
+                <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-lg">
+                    <h2 class="text-xl font-semibold mb-4 text-green-400 border-b border-gray-700 pb-2">Live Diagnostics</h2>
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-gray-400">System Time</span>
+                        <span id="sys-time" class="font-mono text-sm">--:--:--</span>
+                    </div>
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-gray-400">Inference Latency</span>
+                        <span id="inf-latency" class="font-mono text-yellow-400 font-bold">0.00 ms</span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-400">Active Camera ID</span>
+                        <span id="active-cam-id" class="font-mono text-blue-300">--</span>
+                    </div>
+                </div>
+
+                <!-- Registration Form -->
+                <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-lg">
+                    <h2 class="text-xl font-semibold mb-4 text-purple-400 border-b border-gray-700 pb-2">Register Pet Profile</h2>
+                    <form id="register-form" class="space-y-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Camera ID</label>
+                            <select id="camera-select" name="camera_id" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white outline-none focus:border-purple-500"></select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Pet Name</label>
+                            <input type="text" name="pet_name" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white outline-none focus:border-purple-500" placeholder="e.g. Buster" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Profile Photo (1 Dog Only)</label>
+                            <input type="file" name="image" accept="image/*" class="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-gray-700 file:text-white hover:file:bg-gray-600" required>
+                        </div>
+                        <button type="submit" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded transition">Register Pet</button>
+                    </form>
+                    <div id="register-status" class="mt-3 text-sm hidden"></div>
+                </div>
+
+                <!-- Add Camera Form -->
+                <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-lg">
+                    <h2 class="text-xl font-semibold mb-4 text-orange-400 border-b border-gray-700 pb-2">Manage Cameras</h2>
+                    <form id="add-camera-form" class="space-y-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Stream Name</label>
+                            <input type="text" id="cam-name" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white outline-none focus:border-orange-500" placeholder="e.g. Living Room" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Stream URL (or digit for USB)</label>
+                            <input type="text" id="cam-url" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white outline-none focus:border-orange-500" placeholder="e.g. 0 or rtsp://..." required>
+                        </div>
+                        <button type="submit" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-bold py-2 px-4 rounded transition">Add Camera</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const canvas = document.getElementById('videoCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusOverlay = document.getElementById('status-overlay');
+        
+        const sysTimeEl = document.getElementById('sys-time');
+        const infLatencyEl = document.getElementById('inf-latency');
+        const activeCamIdEl = document.getElementById('active-cam-id');
+        
+        let targetCameraId = null; // Store currently viewed camera
+
+        // Load cameras on start
+        async function loadCameras() {
+            try {
+                const res = await fetch('/cameras');
+                const cameras = await res.json();
+                const select = document.getElementById('camera-select');
+                select.innerHTML = '';
+                cameras.forEach(cam => {
+                    const opt = document.createElement('option');
+                    opt.value = cam.id;
+                    opt.textContent = `${cam.name} (ID: ${cam.id})`;
+                    select.appendChild(opt);
+                });
+                if(cameras.length > 0) {
+                    targetCameraId = cameras[0].id; // View first camera by default
+                    activeCamIdEl.textContent = targetCameraId;
+                }
+            } catch (err) {
+                console.error("Failed to load cameras", err);
+            }
+        }
+        loadCameras();
+
+        // Handle Socket IO
+        socket.on('stream_update', (data) => {
+            if (data.status === 'inactive') {
+                statusOverlay.classList.remove('hidden');
+                return;
+            }
+            statusOverlay.classList.add('hidden');
+            
+            // Render Image
+            const img = new Image();
+            img.onload = () => {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                
+                // Draw overlays
+                if (data.detections) {
+                    data.detections.forEach(det => {
+                        const [x1, y1, x2, y2] = det.bbox;
+                        const width = x2 - x1;
+                        const height = y2 - y1;
+                        
+                        // Neon Bounding Box
+                        ctx.strokeStyle = '#00ffcc';
+                        ctx.lineWidth = 3;
+                        ctx.shadowBlur = 10;
+                        ctx.shadowColor = '#00ffcc';
+                        ctx.strokeRect(x1, y1, width, height);
+                        
+                        // Reset shadow for text
+                        ctx.shadowBlur = 0;
+                        
+                        // Background for text
+                        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                        const text = `#${det.tracking_id} ${det.name} (${(det.confidence * 100).toFixed(0)}%)`;
+                        ctx.fillRect(x1, y1 - 25, ctx.measureText(text).width + 10, 25);
+                        
+                        // Text
+                        ctx.fillStyle = '#00ffcc';
+                        ctx.font = '16px Arial font-bold';
+                        ctx.fillText(text, x1 + 5, y1 - 7);
+                    });
+                }
+            };
+            img.src = data.image;
+
+            // Update Metrics
+            if (data.metrics) {
+                sysTimeEl.textContent = data.metrics.system_timestamp;
+                infLatencyEl.textContent = `${data.metrics.inference_latency_ms} ms`;
+            }
+            activeCamIdEl.textContent = data.camera_id;
+        });
+
+        // Add Camera Submit
+        document.getElementById('add-camera-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('cam-name').value;
+            const url = document.getElementById('cam-url').value;
+            try {
+                const res = await fetch('/add_camera', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({stream_name: name, stream_url: url})
+                });
+                if(res.ok) {
+                    document.getElementById('cam-name').value = '';
+                    document.getElementById('cam-url').value = '';
+                    loadCameras();
+                    alert("Camera added successfully!");
+                }
+            } catch(err) {
+                console.error(err);
+                alert("Failed to add camera.");
+            }
+        });
+
+        // Register Pet Submit
+        document.getElementById('register-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const statusEl = document.getElementById('register-status');
+            statusEl.classList.remove('hidden', 'text-green-400', 'text-red-400');
+            statusEl.textContent = 'Uploading...';
+            statusEl.classList.remove('hidden');
+            
+            try {
+                const res = await fetch('/register_pet', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if(res.ok) {
+                    statusEl.textContent = data.message;
+                    statusEl.classList.add('text-green-400');
+                    e.target.reset();
+                } else {
+                    statusEl.textContent = data.error;
+                    statusEl.classList.add('text-red-400');
+                }
+            } catch(err) {
+                console.error(err);
+                statusEl.textContent = "Network error during registration.";
+                statusEl.classList.add('text-red-400');
+            }
+        });
+    </script>
 </body>
 </html>
