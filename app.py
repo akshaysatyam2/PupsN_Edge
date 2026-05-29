@@ -156,6 +156,36 @@ def delete_camera(camera_id):
     return jsonify({"success": True})
 
 
+@app.route('/pets', methods=['GET'])
+def get_pets():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT p.camera_id, c.stream_name, p.pet_name, COUNT(p.id) as photo_count
+        FROM pet_profiles p
+        JOIN camera_config c ON p.camera_id = c.id
+        GROUP BY p.camera_id, p.pet_name
+    ''')
+    pets = [{"camera_id": row[0], "camera_name": row[1], "pet_name": row[2], "photo_count": row[3]} for row in c.fetchall()]
+    conn.close()
+    return jsonify(pets)
+
+
+@app.route('/delete_pet/<int:camera_id>/<pet_name>', methods=['DELETE'])
+def delete_pet(camera_id, pet_name):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM pet_profiles WHERE camera_id=? AND pet_name=?", (camera_id, pet_name))
+    conn.commit()
+    conn.close()
+    
+    global GLOBAL_SCOPED_CACHE
+    if camera_id in GLOBAL_SCOPED_CACHE and pet_name in GLOBAL_SCOPED_CACHE[camera_id]:
+        del GLOBAL_SCOPED_CACHE[camera_id][pet_name]
+        
+    return jsonify({"success": True})
+
+
 @app.route('/register_pet', methods=['POST'])
 def register_pet():
     """ MULTI-PHOTO REGISTRATION GATEKEEPER """
