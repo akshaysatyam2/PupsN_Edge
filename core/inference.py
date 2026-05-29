@@ -183,7 +183,7 @@ class AIPipeline:
             live_vector_norm = live_vector / np.linalg.norm(live_vector)
             
             # Deep Metric Learning Math & Thresholding
-            best_match = "Unknown Dog"
+            best_match_name = None
             best_score = 0.0
             
             for pet_name, db_vectors in scoped_cache.items():
@@ -193,12 +193,18 @@ class AIPipeline:
                     
                     if similarity > best_score:
                         best_score = similarity
-                        if similarity >= 0.75: # Lowered threshold for higher recall
-                            best_match = pet_name
+                        best_match_name = pet_name
+                        
+            if best_match_name is None:
+                final_name = "Unknown Dog"
+            elif best_score >= 0.75: # Lowered threshold for higher recall
+                final_name = best_match_name
+            else:
+                final_name = f"Unidentified (Best: {best_match_name} @ {int(best_score*100)}%)"
                         
             results.append({
                 "tracking_id": tracking_id_counter,
-                "name": best_match,
+                "name": final_name,
                 "confidence": float(yolo_conf), # Return YOLO confidence for the bbox
                 "bbox": [x_min, y_min, x_max, y_max]
             })
