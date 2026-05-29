@@ -8,6 +8,12 @@ import numpy as np
 import cv2
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+from core.inference import AIPipeline
+from core.camera import VideoStream
 
 app = Flask(__name__, template_folder='web/templates', static_folder='web/static')
 app.config['SECRET_KEY'] = 'secret!'
@@ -16,6 +22,9 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 DB_PATH = 'pupsn_core.db'
 # GLOBAL_SCOPED_CACHE = { camera_id: { "Pet_Name": np.ndarray([v1...v512]) } }
 GLOBAL_SCOPED_CACHE = {}
+
+# Global AI Pipeline instance
+ai_pipeline = AIPipeline()
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -81,31 +90,11 @@ def load_cache():
             vector_blob = p[1]
             # Deserialize FP32 array
             vector = np.frombuffer(vector_blob, dtype=np.float32)
-            GLOBAL_SCOPED_CACHE[cam_id][pet_name] = vector
+            if pet_name not in GLOBAL_SCOPED_CACHE[cam_id]:
+                GLOBAL_SCOPED_CACHE[cam_id][pet_name] = []
+            GLOBAL_SCOPED_CACHE[cam_id][pet_name].append(vector)
             
     conn.close()
-
-# Mock AI Models
-def mock_yolo_count_dogs(image_bgr):
-    """
-    Mock YOLO Nano. Simulates counting dogs. 
-    Returns exactly 1 dog to satisfy the validation step, plus a bounding box.
-    """
-    # Using 10% padding for a mock bounding box
-    h, w = image_bgr.shape[:2]
-    return 1, (int(w*0.1), int(h*0.1), int(w*0.9), int(h*0.9))
-
-def mock_osnet_extract(cropped_img):
-    """
-    Mock OSNet. Extracts a 512-dimension FP32 embedding.
-    """
-    vec = np.random.rand(512).astype(np.float32)
-    # Normalize the vector
-    vec /= np.linalg.norm(vec)
-    return vec
-
-def cosine_similarity(v1, v2):
-    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
 
 @app.route('/')
@@ -148,189 +137,234 @@ def add_camera():
     return jsonify({"success": True, "camera_id": new_id})
 
 
-@app.route('/register_pet', methods=['POST'])
-def register_pet():
-    """ 1-DOG PHOTO REGISTRATION GATEKEEPER """
-    camera_id = request.form.get('camera_id', type=int)
-    pet_name = request.form.get('pet_name')
-    file = request.files.get('image')
+@app.route('/delete_camera/<int:camera_id>', methods=['DELETE'])
+def delete_camera(camera_id):
+    # Completely stop stream and inference thread before db operation
+    worker_manager.stop_camera_thread(camera_id)
     
-    if not camera_id or not pet_name or not file:
-        return jsonify({"error": "Missing required fields"}), 400
-        
-    # Read the image file directly from memory into OpenCV
-    file_bytes = np.frombuffer(file.read(), np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    
-    if img is None:
-        return jsonify({"error": "Invalid image format."}), 400
-        
-    # 1. Class-Count Verification
-    dog_count, bbox = mock_yolo_count_dogs(img)
-    
-    # 2. The 1-Dog Rule
-    if dog_count != 1:
-        return jsonify({"error": "Registration failed: The uploaded image must contain exactly one dog."}), 400
-        
-    # 3. Crop & Extract
-    x1, y1, x2, y2 = bbox
-    crop = img[y1:y2, x1:x2]
-    # Resize it to 256x128 (width=128, height=256)
-    crop_resized = cv2.resize(crop, (128, 256))
-    
-    # Extract 512-dimension vector
-    vector = mock_osnet_extract(crop_resized)
-    vector_blob = vector.tobytes()
-    
-    # Commit binary blob to DB under selected camera_id
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT INTO pet_profiles (camera_id, pet_name, vector_blob) VALUES (?, ?, ?)",
-              (camera_id, pet_name, vector_blob))
+    c.execute("DELETE FROM camera_config WHERE id=?", (camera_id,))
+    c.execute("DELETE FROM pet_profiles WHERE camera_id=?", (camera_id,))
     conn.commit()
     conn.close()
+    
+    global GLOBAL_SCOPED_CACHE
+    if camera_id in GLOBAL_SCOPED_CACHE:
+        del GLOBAL_SCOPED_CACHE[camera_id]
+        
+    return jsonify({"success": True})
+
+
+@app.route('/register_pet', methods=['POST'])
+def register_pet():
+    """ MULTI-PHOTO REGISTRATION GATEKEEPER """
+    camera_id = request.form.get('camera_id', type=int)
+    pet_name = request.form.get('pet_name')
+    files = request.files.getlist('images')
+    
+    if not camera_id or not pet_name or not files or len(files) == 0:
+        return jsonify({"error": "Missing required fields or images"}), 400
+        
+    if len(files) > 5:
+        return jsonify({"error": "Maximum of 5 images allowed per pet."}), 400
+        
+    if ai_pipeline.yolo_session is None or ai_pipeline.osnet_session is None:
+        return jsonify({"error": "Models are not loaded on backend."}), 500
+
+    extracted_vectors = []
+    
+    for file in files:
+        if file.filename == '':
+            continue
+            
+        file_bytes = np.frombuffer(file.read(), np.uint8)
+        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            continue
+            
+        h, w = img.shape[:2]
+        yolo_input = ai_pipeline.preprocess_yolo(img)
+        yolo_outputs = ai_pipeline.yolo_session.run(None, {ai_pipeline.yolo_input_name: yolo_input})[0]
+        detections = ai_pipeline.postprocess_yolo(yolo_outputs, w, h)
+        
+        # 2. The 1-Dog Rule per uploaded image
+        if len(detections) != 1:
+            return jsonify({"error": f"Registration failed on image '{file.filename}': Found {len(detections)} dogs. Each uploaded image must contain exactly one dog."}), 400
+            
+        # 3. Crop & Extract using real OSNet model
+        x_min, y_min, x_max, y_max = detections[0]["bbox"]
+        x_min, y_min = max(0, x_min), max(0, y_min)
+        x_max, y_max = min(w, x_max), min(h, y_max)
+        
+        crop = img[y_min:y_max, x_min:x_max]
+        osnet_input = ai_pipeline.preprocess_osnet(crop)
+        
+        osnet_outputs = ai_pipeline.osnet_session.run(None, {ai_pipeline.osnet_input_name: osnet_input})[0]
+        vector = osnet_outputs.flatten()
+        
+        # Normalize the vector
+        vector /= np.linalg.norm(vector)
+        extracted_vectors.append(vector)
+        
+        # Cleanup loop memory
+        del img
+        del crop
+        del yolo_input
+        del osnet_input
+    
+    if len(extracted_vectors) == 0:
+        return jsonify({"error": "Failed to process any valid images."}), 400
+        
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     
     # 4. Cache Sync without restarting
     global GLOBAL_SCOPED_CACHE
     if camera_id not in GLOBAL_SCOPED_CACHE:
         GLOBAL_SCOPED_CACHE[camera_id] = {}
-    GLOBAL_SCOPED_CACHE[camera_id][pet_name] = vector
+    if pet_name not in GLOBAL_SCOPED_CACHE[camera_id]:
+        GLOBAL_SCOPED_CACHE[camera_id][pet_name] = []
+        
+    # Delete existing profiles for this pet on this camera to ensure exactly max 5
+    c.execute("DELETE FROM pet_profiles WHERE camera_id=? AND pet_name=?", (camera_id, pet_name))
+    GLOBAL_SCOPED_CACHE[camera_id][pet_name] = []
     
-    # Memory Management
-    del img
-    del crop
-    del crop_resized
+    for vector in extracted_vectors:
+        vector /= np.linalg.norm(vector)
+        vector_blob = vector.tobytes()
+        c.execute("INSERT INTO pet_profiles (camera_id, pet_name, vector_blob) VALUES (?, ?, ?)",
+                  (camera_id, pet_name, vector_blob))
+        GLOBAL_SCOPED_CACHE[camera_id][pet_name].append(vector)
+        
+    conn.commit()
+    conn.close()
+    
     gc.collect()
     
-    return jsonify({"success": True, "message": f"{pet_name} registered successfully."})
+    return jsonify({"success": True, "message": f"{pet_name} registered successfully with {len(extracted_vectors)} photos."})
 
 
 class BackgroundWorkerManager:
     """ Persistent Scope-Isolated Background Stream Engine """
     def __init__(self):
-        self.running = True
         self.threads = {}
+        self.running_flags = {}
+        self.video_streams = {}
+
+    def stop_camera_thread(self, camera_id):
+        if camera_id in self.running_flags:
+            self.running_flags[camera_id] = False
+            del self.running_flags[camera_id]
+        if camera_id in self.video_streams:
+            self.video_streams[camera_id].stop()
+            del self.video_streams[camera_id]
+        if camera_id in self.threads:
+            del self.threads[camera_id]
+        gc.collect()
 
     def start_camera_thread(self, camera_id, stream_url):
         if camera_id in self.threads:
             return # Already running
             
+        self.running_flags[camera_id] = True
+        
+        # Cast stream_url to int if it's purely digits (USB cams)
+        target = int(stream_url) if stream_url.isdigit() else stream_url
+        
+        # Instantiate continuous backlog-free stream reader
+        self.video_streams[camera_id] = VideoStream(target, reconnect_interval=10)
+            
         def worker():
-            backoff_intervals = [5, 10, 15, 30]
-            backoff_idx = 0
+            last_ai_time = 0.0
+            ai_interval = 1.0 # 1,000 milliseconds clock gate
+            inference_latency_ms = 0.0
+            last_detections = []
             
-            # Cast stream_url to int if it's purely digits (USB cams)
-            target = int(stream_url) if stream_url.isdigit() else stream_url
-            
-            while self.running:
-                cap = cv2.VideoCapture(target)
+            while self.running_flags.get(camera_id, False):
+                stream = self.video_streams.get(camera_id)
+                if not stream:
+                    break
+                    
+                frame = stream.read()
                 
-                if not cap.isOpened():
+                if frame is None:
                     socketio.emit('stream_update', {"camera_id": camera_id, "status": "inactive"})
-                    sleep_time = backoff_intervals[backoff_idx]
-                    time.sleep(sleep_time)
-                    if backoff_idx < len(backoff_intervals) - 1:
-                        backoff_idx += 1
+                    time.sleep(1.0)
+                    continue
+                    
+                # Hard-resize to 640x640 to conserve memory and align with AI
+                try:
+                    frame = cv2.resize(frame, (640, 640))
+                except Exception as e:
+                    time.sleep(0.1)
                     continue
                 
-                # Successful connection, reset backoff
-                backoff_idx = 0
-                last_ai_time = 0.0
-                ai_interval = 1.0 # 1,000 milliseconds clock gate
-                inference_latency_ms = 0.0
+                current_time = time.time()
                 
-                # Mock Tracking state across frames
-                trackers = {1: {"name": "Unknown Dog", "bbox": [150, 90, 380, 520]}}
-                
-                while self.running and cap.isOpened():
-                    ret, frame = cap.read()
-                    if not ret:
-                        # Dropped stream, break to hit reconnection logic
-                        break 
-                        
-                    # Hard-resize to 640x640 to conserve memory
-                    frame = cv2.resize(frame, (640, 640))
+                # 1-FPS Scoped Inference
+                if current_time - last_ai_time >= ai_interval:
+                    start_inference = time.time()
                     
-                    current_time = time.time()
+                    cache_for_cam = GLOBAL_SCOPED_CACHE.get(camera_id, {})
                     
-                    # 1-FPS Scoped Inference
-                    if current_time - last_ai_time >= ai_interval:
-                        start_inference = time.time()
-                        
-                        cache_for_cam = GLOBAL_SCOPED_CACHE.get(camera_id, {})
-                        
-                        for tid, obj in list(trackers.items()):
-                            if obj["name"] == "Unknown Dog":
-                                # Mock extracting embedding for this crop
-                                crop_vec = mock_osnet_extract(frame)
-                                
-                                best_match = None
-                                highest_sim = 0.0
-                                
-                                # Isolate matching against only THIS camera's cache
-                                for p_name, p_vec in cache_for_cam.items():
-                                    sim = cosine_similarity(crop_vec, p_vec)
-                                    if sim > highest_sim:
-                                        highest_sim = sim
-                                        best_match = p_name
-                                        
-                                if highest_sim >= 0.85 and best_match:
-                                    obj["name"] = best_match
-                                elif cache_for_cam and np.random.rand() > 0.8:
-                                    # MOCK SIMULATION: Forcefully resolve sometimes so UI can be demonstrated 
-                                    # since purely random vectors almost never hit 0.85 cosine similarity.
-                                    best_match = list(cache_for_cam.keys())[0]
-                                    obj["name"] = best_match
-                                    highest_sim = 0.86
-                                    
-                                # Log detection to SQLite
-                                conn = sqlite3.connect(DB_PATH)
-                                c = conn.cursor()
+                    # Real AI Pipeline Inference
+                    last_detections = ai_pipeline.run_inference(frame, cache_for_cam)
+                    
+                    last_ai_time = time.time()
+                    inference_latency_ms = (last_ai_time - start_inference) * 1000
+                    
+                    # Log detections to SQLite
+                    if len(last_detections) > 0:
+                        try:
+                            conn = sqlite3.connect(DB_PATH)
+                            c = conn.cursor()
+                            for det in last_detections:
                                 c.execute('''
                                     INSERT INTO detection_logs (camera_id, tracking_id, identified_name, confidence, inference_latency_ms)
                                     VALUES (?, ?, ?, ?, ?)
-                                ''', (camera_id, tid, obj["name"], float(highest_sim), inference_latency_ms))
-                                conn.commit()
-                                conn.close()
-                                
-                        last_ai_time = time.time()
-                        inference_latency_ms = (last_ai_time - start_inference) * 1000
+                                ''', (camera_id, det["tracking_id"], det["name"], det["confidence"], inference_latency_ms))
+                            conn.commit()
+                            conn.close()
+                        except Exception as e:
+                            logging.error(f"Failed to log to db: {e}")
+
+                # Backend Overlay Drawing
+                for det in last_detections:
+                    x1, y1, x2, y2 = det["bbox"]
+                    name = det["name"]
+                    conf = det["confidence"]
+                    tid = det["tracking_id"]
                     
-                    # Telemetry Payload Preparation
-                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
-                    _, buffer = cv2.imencode('.jpg', frame, encode_param)
-                    img_str = base64.b64encode(buffer).decode('utf-8')
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 204), 2)
                     
-                    detections = []
-                    for tid, obj in trackers.items():
-                        detections.append({
-                            "tracking_id": tid,
-                            "name": obj["name"],
-                            "confidence": 0.92,
-                            "bbox": obj["bbox"]
-                        })
-                        
-                    payload = {
-                        "camera_id": camera_id,
-                        "status": "active",
-                        "image": f"data:image/jpeg;base64,{img_str}",
-                        "metrics": {
-                            "inference_latency_ms": round(inference_latency_ms, 2),
-                            "system_timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                        },
-                        "detections": detections
+                    label = f"#{tid} {name} ({int(conf*100)}%)"
+                    (label_width, label_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    cv2.rectangle(frame, (x1, y1 - 30), (x1 + label_width, y1), (0, 0, 0), -1)
+                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 204), 2)
+                
+                # Telemetry Payload Preparation
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
+                _, buffer = cv2.imencode('.jpg', frame, encode_param)
+                img_str = base64.b64encode(buffer).decode('utf-8')
+                    
+                payload = {
+                    "camera_id": camera_id,
+                    "status": "active",
+                    "image": f"data:image/jpeg;base64,{img_str}",
+                    "metrics": {
+                        "inference_latency_ms": round(inference_latency_ms, 2),
+                        "system_timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
                     }
-                    socketio.emit('stream_update', payload)
-                    
-                    # Explicit Memory Management
-                    del frame
-                    del buffer
-                    gc.collect()
-                    
-                    # Restrict frame pull rate slightly to avoid massive CPU pegging
-                    time.sleep(0.03) 
-                    
-                cap.release()
+                }
+                socketio.emit('stream_update', payload)
+                
+                del frame
+                del buffer
+                
+                # Restrict frame pull rate slightly
+                time.sleep(0.03) 
                 
         t = threading.Thread(target=worker, daemon=True)
         t.start()
@@ -353,4 +387,4 @@ if __name__ == '__main__':
     load_cache()
     # Boot persistent engine with Flask
     start_background_workers()
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)

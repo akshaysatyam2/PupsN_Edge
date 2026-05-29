@@ -1,83 +1,63 @@
 import cv2
 import threading
 import time
+import logging
 
-class RealTimeVideoStream:
-    """
-    Robust Multi-Protocol Stream Intake State Machine.
-    Dedicated background thread strictly for polling `cap.read()` to clear hardware
-    queues and prevent frame backlog. Incorporates exponential backoff.
-    """
-    def __init__(self, src):
-        self.src = src
+logger = logging.getLogger(__name__)
+
+class VideoStream:
+    def __init__(self, source, reconnect_interval=10):
+        self.source = source
+        self.reconnect_interval = reconnect_interval
         self.stream = None
-        self.ret = False
-        self.frame = None
         self.stopped = False
+        self.latest_frame = None
+        # print(cv2.getBuildInformation())
         self.lock = threading.Lock()
-        self.retry_count = 0
-        
-        self._init_stream()
+        self.thread = threading.Thread(target=self.update, daemon=True)
+        self._connect()
+        self.thread.start()
 
-    def _init_stream(self):
-        # Hardware Bus Target vs Network Protocol
-        target = int(self.src) if str(self.src).isdigit() else self.src
-        self.stream = cv2.VideoCapture(target)
-        if self.stream.isOpened():
-            self.ret, frame = self.stream.read()
-            if self.ret:
-                self.frame = frame
-
-    def start(self):
-        t = threading.Thread(target=self.update, daemon=True)
-        t.start()
-        return self
+    def _connect(self):
+        """Initialize or re-initialize the video capture."""
+        if self.stream:
+            self.stream.release()
+            self.stream = None
+        logger.info(f"Trying to connect to video source: {self.source}")
+        self.stream = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+        if not self.stream.isOpened():
+            logger.warning(f"Failed to open video source: {self.source}")
 
     def update(self):
+        """Continuously grab the latest frame, reconnect if needed."""
         while not self.stopped:
             if self.stream is None or not self.stream.isOpened():
-                self._handle_reconnect()
+                logger.info(f"Video source not opened, retrying in {self.reconnect_interval} seconds...")
+                time.sleep(self.reconnect_interval)
+                self._connect()
                 continue
-                
+
             ret, frame = self.stream.read()
-            if not ret:
-                self._handle_reconnect()
-                continue
-                
-            # Success, clear retry
-            self.retry_count = 0
-            with self.lock:
-                self.ret = ret
-                self.frame = frame
-                
-    def _handle_reconnect(self):
-        self.ret = False
-        self.retry_count += 1
-        
-        if self.stream:
-            self.stream.release()
-            
-        # Exponential Backoff Reconnection Machine
-        if self.retry_count == 1:
-            sleep_dur = 5
-        elif self.retry_count == 2:
-            sleep_dur = 10
-        elif self.retry_count == 3:
-            sleep_dur = 15
-        else:
-            sleep_dur = 30
-            
-        print(f"Camera feed lost. Attempt {self.retry_count}, retrying in {sleep_dur}s...")
-        time.sleep(sleep_dur)
-        self._init_stream()
+            if ret:
+                with self.lock:
+                    self.latest_frame = frame
+            else:
+                logger.warning("Failed to read frame from video source, reconnecting...")
+                self.stream.release()
+                self.stream = None
+                time.sleep(self.reconnect_interval)
+                self._connect()
 
     def read(self):
+        """Return the latest frame"""
         with self.lock:
-            if self.ret and self.frame is not None:
-                return self.ret, self.frame.copy()
-            return self.ret, None
+            return self.latest_frame
 
     def stop(self):
+        """Stop the video stream"""
         self.stopped = True
+        if threading.current_thread() != self.thread:
+            self.thread.join(timeout=1.0)
         if self.stream:
             self.stream.release()
+            self.stream = None

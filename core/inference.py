@@ -18,14 +18,14 @@ class AIPipeline:
             print(f"WARNING: YOLO model not found at {self.yolo_path}. Inference will be bypassed.")
             self.yolo_session = None
         else:
-            self.yolo_session = ort.InferenceSession(self.yolo_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            self.yolo_session = ort.InferenceSession(self.yolo_path, providers=['CPUExecutionProvider'])
             self.yolo_input_name = self.yolo_session.get_inputs()[0].name
             
         if not os.path.exists(self.osnet_path):
             print(f"WARNING: OSNet model not found at {self.osnet_path}. Inference will be bypassed.")
             self.osnet_session = None
         else:
-            self.osnet_session = ort.InferenceSession(self.osnet_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            self.osnet_session = ort.InferenceSession(self.osnet_path, providers=['CPUExecutionProvider'])
             self.osnet_input_name = self.osnet_session.get_inputs()[0].name
 
     def preprocess_yolo(self, frame):
@@ -140,7 +140,7 @@ class AIPipeline:
         img = np.expand_dims(img, axis=0)  # BCHW
         return img
 
-    def run_inference(self, frame):
+    def run_inference(self, frame, scoped_cache):
         """
         Executes the 4-step processing pipeline.
         """
@@ -186,14 +186,15 @@ class AIPipeline:
             best_match = "Unknown Dog"
             best_score = 0.0
             
-            for pet_name, db_vector in GLOBAL_PET_CACHE.items():
-                db_vector_norm = db_vector / np.linalg.norm(db_vector)
-                similarity = np.dot(live_vector_norm, db_vector_norm)
-                
-                if similarity > best_score:
-                    best_score = similarity
-                    if similarity >= 0.85: # Threshold from specification
-                        best_match = pet_name
+            for pet_name, db_vectors in scoped_cache.items():
+                for db_vector in db_vectors:
+                    # Vectors in scoped_cache are already normalized during registration
+                    similarity = np.dot(live_vector_norm, db_vector)
+                    
+                    if similarity > best_score:
+                        best_score = similarity
+                        if similarity >= 0.85: # Threshold from specification
+                            best_match = pet_name
                         
             results.append({
                 "tracking_id": tracking_id_counter,

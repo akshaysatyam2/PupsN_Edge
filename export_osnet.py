@@ -25,8 +25,9 @@ from collections import OrderedDict
 new_state_dict = OrderedDict()
 for k, v in state_dict.items():
     name = k.replace("module.", "") if k.startswith("module.") else k
-    # We might not need the classifier head if we just want features
-    new_state_dict[name] = v
+    # We don't need the classifier head because we just want features
+    if not name.startswith('classifier.'):
+        new_state_dict[name] = v
 
 osnet.load_state_dict(new_state_dict, strict=False)
 osnet.eval()

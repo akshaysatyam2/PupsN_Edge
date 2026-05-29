@@ -13,7 +13,15 @@
         
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <!-- Main Video Feed -->
-            <div class="lg:col-span-2">
+            <div class="lg:col-span-2 space-y-4">
+                <div class="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg flex justify-between items-center">
+                    <h2 class="text-xl font-semibold text-blue-300">Live Stream</h2>
+                    <div class="flex items-center space-x-2">
+                        <label class="text-sm text-gray-400">Viewing Camera:</label>
+                        <select id="view-camera-select" class="bg-gray-900 border border-gray-700 rounded p-1 text-white outline-none focus:border-blue-500"></select>
+                    </div>
+                </div>
+                
                 <div class="bg-black rounded-xl overflow-hidden shadow-2xl relative border border-gray-700 aspect-square">
                     <canvas id="videoCanvas" width="640" height="640" class="w-full h-full object-cover"></canvas>
                     <div id="status-overlay" class="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded font-bold text-sm hidden">
@@ -47,24 +55,29 @@
                     <form id="register-form" class="space-y-4">
                         <div>
                             <label class="block text-sm text-gray-400 mb-1">Camera ID</label>
-                            <select id="camera-select" name="camera_id" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white outline-none focus:border-purple-500"></select>
+                            <select id="register-camera-select" name="camera_id" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white outline-none focus:border-purple-500"></select>
                         </div>
                         <div>
                             <label class="block text-sm text-gray-400 mb-1">Pet Name</label>
                             <input type="text" name="pet_name" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white outline-none focus:border-purple-500" placeholder="e.g. Buster" required>
                         </div>
                         <div>
-                            <label class="block text-sm text-gray-400 mb-1">Profile Photo (1 Dog Only)</label>
-                            <input type="file" name="image" accept="image/*" class="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-gray-700 file:text-white hover:file:bg-gray-600" required>
+                            <label class="block text-sm text-gray-400 mb-1">Profile Photos (Up to 5, 1 Dog Only per photo)</label>
+                            <input type="file" name="images" accept="image/*" multiple max="5" class="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-gray-700 file:text-white hover:file:bg-gray-600" required>
+                            <p class="text-xs text-gray-500 mt-1">Select up to 5 photos to create a more robust profile.</p>
                         </div>
                         <button type="submit" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded transition">Register Pet</button>
                     </form>
                     <div id="register-status" class="mt-3 text-sm hidden"></div>
                 </div>
 
-                <!-- Add Camera Form -->
+                <!-- Add/Manage Camera Form -->
                 <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-lg">
                     <h2 class="text-xl font-semibold mb-4 text-orange-400 border-b border-gray-700 pb-2">Manage Cameras</h2>
+                    <ul id="camera-list" class="mb-4 space-y-2 max-h-32 overflow-y-auto">
+                        <!-- Camera items will be injected here -->
+                    </ul>
+                    <hr class="border-gray-700 mb-4">
                     <form id="add-camera-form" class="space-y-4">
                         <div>
                             <label class="block text-sm text-gray-400 mb-1">Stream Name</label>
@@ -91,73 +104,102 @@
         const infLatencyEl = document.getElementById('inf-latency');
         const activeCamIdEl = document.getElementById('active-cam-id');
         
-        let targetCameraId = null; // Store currently viewed camera
+        let targetCameraId = null;
+
+        document.getElementById('view-camera-select').addEventListener('change', (e) => {
+            targetCameraId = parseInt(e.target.value);
+            // Clear canvas when switching cameras
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            statusOverlay.classList.remove('hidden');
+        });
 
         // Load cameras on start
         async function loadCameras() {
             try {
                 const res = await fetch('/cameras');
                 const cameras = await res.json();
-                const select = document.getElementById('camera-select');
-                select.innerHTML = '';
+                
+                const viewSelect = document.getElementById('view-camera-select');
+                const regSelect = document.getElementById('register-camera-select');
+                const camList = document.getElementById('camera-list');
+                
+                viewSelect.innerHTML = '';
+                regSelect.innerHTML = '';
+                camList.innerHTML = '';
+                
                 cameras.forEach(cam => {
-                    const opt = document.createElement('option');
-                    opt.value = cam.id;
-                    opt.textContent = `${cam.name} (ID: ${cam.id})`;
-                    select.appendChild(opt);
+                    const optText = `${cam.name} (ID: ${cam.id})`;
+                    
+                    const opt1 = document.createElement('option');
+                    opt1.value = cam.id;
+                    opt1.textContent = optText;
+                    viewSelect.appendChild(opt1);
+                    
+                    const opt2 = document.createElement('option');
+                    opt2.value = cam.id;
+                    opt2.textContent = optText;
+                    regSelect.appendChild(opt2);
+                    
+                    const li = document.createElement('li');
+                    li.className = "flex justify-between items-center bg-gray-900 p-2 rounded text-sm";
+                    li.innerHTML = `
+                        <span class="truncate pr-2">${optText}</span>
+                        <button onclick="deleteCamera(${cam.id})" class="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs">Del</button>
+                    `;
+                    camList.appendChild(li);
                 });
-                if(cameras.length > 0) {
-                    targetCameraId = cameras[0].id; // View first camera by default
-                    activeCamIdEl.textContent = targetCameraId;
+
+                if (cameras.length > 0) {
+                    // Update targetCameraId only if it's currently null or no longer exists
+                    if (targetCameraId === null || !cameras.some(c => c.id === targetCameraId)) {
+                        targetCameraId = cameras[0].id;
+                    }
+                    viewSelect.value = targetCameraId;
+                    regSelect.value = targetCameraId;
+                } else {
+                    targetCameraId = null;
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    statusOverlay.classList.remove('hidden');
+                    statusOverlay.textContent = 'No Cameras Available';
                 }
             } catch (err) {
                 console.error("Failed to load cameras", err);
             }
         }
+        
+        async function deleteCamera(id) {
+            if (!confirm("Are you sure you want to delete this camera?")) return;
+            try {
+                const res = await fetch(`/delete_camera/${id}`, { method: 'DELETE' });
+                if (res.ok) {
+                    loadCameras();
+                } else {
+                    alert("Failed to delete camera.");
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
         loadCameras();
 
         // Handle Socket IO
         socket.on('stream_update', (data) => {
+            // Drop frames from background threads that aren't our target camera
+            if (data.camera_id !== targetCameraId) return;
+
             if (data.status === 'inactive') {
                 statusOverlay.classList.remove('hidden');
+                statusOverlay.textContent = 'Inactive / Reconnecting...';
                 return;
             }
             statusOverlay.classList.add('hidden');
             
-            // Render Image
+            // Render Image (Backend now draws the bounding boxes directly onto the frame!)
             const img = new Image();
             img.onload = () => {
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                
-                // Draw overlays
-                if (data.detections) {
-                    data.detections.forEach(det => {
-                        const [x1, y1, x2, y2] = det.bbox;
-                        const width = x2 - x1;
-                        const height = y2 - y1;
-                        
-                        // Neon Bounding Box
-                        ctx.strokeStyle = '#00ffcc';
-                        ctx.lineWidth = 3;
-                        ctx.shadowBlur = 10;
-                        ctx.shadowColor = '#00ffcc';
-                        ctx.strokeRect(x1, y1, width, height);
-                        
-                        // Reset shadow for text
-                        ctx.shadowBlur = 0;
-                        
-                        // Background for text
-                        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-                        const text = `#${det.tracking_id} ${det.name} (${(det.confidence * 100).toFixed(0)}%)`;
-                        ctx.fillRect(x1, y1 - 25, ctx.measureText(text).width + 10, 25);
-                        
-                        // Text
-                        ctx.fillStyle = '#00ffcc';
-                        ctx.font = '16px Arial font-bold';
-                        ctx.fillText(text, x1 + 5, y1 - 7);
-                    });
-                }
             };
             img.src = data.image;
 
@@ -184,7 +226,6 @@
                     document.getElementById('cam-name').value = '';
                     document.getElementById('cam-url').value = '';
                     loadCameras();
-                    alert("Camera added successfully!");
                 }
             } catch(err) {
                 console.error(err);
@@ -198,7 +239,8 @@
             const formData = new FormData(e.target);
             const statusEl = document.getElementById('register-status');
             statusEl.classList.remove('hidden', 'text-green-400', 'text-red-400');
-            statusEl.textContent = 'Uploading...';
+            statusEl.textContent = 'Uploading & Running OSNet...';
+            statusEl.classList.add('text-blue-400');
             statusEl.classList.remove('hidden');
             
             try {
@@ -207,6 +249,7 @@
                     body: formData
                 });
                 const data = await res.json();
+                statusEl.classList.remove('text-blue-400');
                 if(res.ok) {
                     statusEl.textContent = data.message;
                     statusEl.classList.add('text-green-400');
@@ -217,6 +260,7 @@
                 }
             } catch(err) {
                 console.error(err);
+                statusEl.classList.remove('text-blue-400');
                 statusEl.textContent = "Network error during registration.";
                 statusEl.classList.add('text-red-400');
             }
