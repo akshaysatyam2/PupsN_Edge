@@ -197,7 +197,7 @@ class AIPipeline:
                         
             if best_match_name is None:
                 final_name = "Unknown Dog"
-            elif best_score >= 0.75: # Lowered threshold for higher recall
+            elif best_score >= 0.65: # Lowered threshold for higher recall
                 final_name = best_match_name
             else:
                 final_name = f"Unidentified (Best: {best_match_name} @ {int(best_score*100)}%)"
