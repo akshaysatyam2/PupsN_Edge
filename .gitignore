@@ -30,14 +30,15 @@ share/python-wheels/
 MANIFEST
 
 # AI Models and Weights
-*.onnx
+# (Commented out to allow pushing small Nano/OSNet models to GitHub)
+# *.onnx
 *.pt
 *.pth
 *.weights
 *.h5
 *.pb
 *.tflite
-models/
+# models/
 !models/.keep
 
 # Database
